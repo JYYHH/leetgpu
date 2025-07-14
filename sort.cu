@@ -35,24 +35,15 @@ __global__ void initialize_and_local_sort_kernel(float* data, float* more_data, 
 
     // local (in-block)bitonic sort
     for (int k = 2; k < (N << 1) && k <= block_size; k <<= 1){
+        int in_or_de = (global_id & k) == 0;
         for (int j = k >> 1; j; j >>= 1){
             int other_id = tid ^ j;
             if (tid < other_id){
                 float left_data = shared_data[tid];
                 float right_data = shared_data[other_id];
-                if (global_id & k){
-                    // switch is left < right
-                    if (left_data < right_data){
-                        shared_data[tid] = right_data;
-                        shared_data[other_id] = left_data;
-                    }
-                }
-                else{
-                    // switch is left > right
-                    if (left_data > right_data){
-                        shared_data[tid] = right_data;
-                        shared_data[other_id] = left_data;
-                    }
+                if ((left_data < right_data) ^ in_or_de){
+                    shared_data[tid] = right_data;
+                    shared_data[other_id] = left_data;
                 }
             }
             __syncthreads();
@@ -97,24 +88,15 @@ __global__ void global_sort_multiple_iterations_kernel(float* data, float* more_
     const int block_size = blockDim.x;
     const int global_id = bid * block_size + tid;
 
+    int in_or_de = (global_id & k) == 0;
     for (int j = block_size >> 1; j; j >>= 1){
         int other_id = global_id ^ j;
         if (global_id < other_id){
             float left_data = _my_get(data, more_data, N, global_id);
             float right_data = _my_get(data, more_data, N, other_id);
-            if (global_id & k){
-                // switch is left < right
-                if (left_data < right_data){
-                    _my_set(data, more_data, N, global_id, right_data);
-                    _my_set(data, more_data, N, other_id, left_data);
-                }
-            }
-            else{
-                // switch is left > right
-                if (left_data > right_data){
-                    _my_set(data, more_data, N, global_id, right_data);
-                    _my_set(data, more_data, N, other_id, left_data);
-                }
+            if ((left_data < right_data) ^ in_or_de){
+                _my_set(data, more_data, N, global_id, right_data);
+                _my_set(data, more_data, N, other_id, left_data);
             }
         }
         __syncthreads();
