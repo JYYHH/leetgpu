@@ -24,36 +24,44 @@ __global__ void initialize_and_local_sort_kernel(float* data, float* more_data, 
     const int bid = blockIdx.x;
     const int block_size = blockDim.x;
     const int global_id = bid * block_size + tid;
+    __shared__ float shared_data[THREADS_PER_BLOCK];
 
     // initialization for the INF data
     if (global_id >= N)
-        more_data[global_id - N] = INFINITY;
+        shared_data[tid] = INFINITY;
+    else
+        shared_data[tid] = data[global_id];
+    __syncthreads();
 
     // local (in-block)bitonic sort
     for (int k = 2; k < (N << 1) && k <= block_size; k <<= 1){
         for (int j = k >> 1; j; j >>= 1){
-            int other_id = global_id ^ j;
-            if (global_id < other_id){
-                float left_data = _my_get(data, more_data, N, global_id);
-                float right_data = _my_get(data, more_data, N, other_id);
+            int other_id = tid ^ j;
+            if (tid < other_id){
+                float left_data = shared_data[tid];
+                float right_data = shared_data[other_id];
                 if (global_id & k){
                     // switch is left < right
                     if (left_data < right_data){
-                        _my_set(data, more_data, N, global_id, right_data);
-                        _my_set(data, more_data, N, other_id, left_data);
+                        shared_data[tid] = right_data;
+                        shared_data[other_id] = left_data;
                     }
                 }
                 else{
                     // switch is left > right
                     if (left_data > right_data){
-                        _my_set(data, more_data, N, global_id, right_data);
-                        _my_set(data, more_data, N, other_id, left_data);
+                        shared_data[tid] = right_data;
+                        shared_data[other_id] = left_data;
                     }
                 }
             }
             __syncthreads();
         }
     }
+    if (global_id >= N)
+        more_data[global_id - N] = shared_data[tid];
+    else
+        data[global_id] = shared_data[tid];
 }
 
 __global__ void global_sort_single_iteration_kernel(float* data, float* more_data, const int N, const int k, const int j) {
@@ -137,7 +145,7 @@ void solve(float* data, int N) {
                 global_sort_single_iteration_kernel<<<block_num, block_size>>>(data, more_data, N, k, j);
                 cudaDeviceSynchronize();
             }
-            // global_sort_multiple_iterations_kernel<<<block_num, block_size>>>(data, more_data, N, k);
+            global_sort_multiple_iterations_kernel<<<block_num, block_size>>>(data, more_data, N, k);
             cudaDeviceSynchronize();
         }
     }
