@@ -44,8 +44,8 @@ __global__ void initialize_and_local_sort_kernel(float* data, float* more_data, 
         for (int j = k >> 1; j; j >>= 1){
             const int left_id = tid + tid / j * j;
             const int right_id = left_id ^ j;
-            const float left_data = shared_data[left_id];
-            const float right_data = shared_data[right_id];
+            float left_data = shared_data[left_id];
+            float right_data = shared_data[right_id];
             if ((left_data > right_data) ^ de_or_in){
                 shared_data[left_id] = right_data;
                 shared_data[right_id] = left_data;
@@ -74,8 +74,8 @@ __global__ void global_sort_single_iteration_kernel(float* data, float* more_dat
     const int left_id = global_id + global_id / j * j;
     const int right_id = left_id ^ j;
 
-    const float left_data = _my_get(data, more_data, N, left_id);
-    const float right_data = _my_get(data, more_data, N, right_id);
+    float left_data = _my_get(data, more_data, N, left_id);
+    float right_data = _my_get(data, more_data, N, right_id);
     if ((left_data > right_data) ^ de_or_in){
         _my_set(data, more_data, N, left_id, right_data);
         _my_set(data, more_data, N, right_id, left_data);
@@ -93,8 +93,8 @@ __global__ void global_sort_multiple_iterations_kernel(float* data, float* more_
         const int left_id = global_id + global_id / j * j;
         const int right_id = left_id ^ j;
 
-        const float left_data = _my_get(data, more_data, N, left_id);
-        const float right_data = _my_get(data, more_data, N, right_id);
+        float left_data = _my_get(data, more_data, N, left_id);
+        float right_data = _my_get(data, more_data, N, right_id);
         if ((left_data > right_data) ^ de_or_in){
             _my_set(data, more_data, N, left_id, right_data);
             _my_set(data, more_data, N, right_id, left_data);
@@ -118,7 +118,7 @@ void solve(float* data, int N) {
         cudaMalloc(&more_data, (delta * sizeof(float)));
     initialize_and_local_sort_kernel<<<(block_num >> 1), block_size>>>(data, more_data, N);
     cudaDeviceSynchronize();
-    // after that local sort, the first block will be in ascending order, second in descending order, third in ascending order, etc...
+    // after that local sort, the first block (UNIT_PER_BLOCK elements) will be in ascending order, second in descending order, third in ascending order, etc...
 
     if (block_num_log){
         // We need to sort among blocks
