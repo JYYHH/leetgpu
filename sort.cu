@@ -135,10 +135,10 @@ void solve(float* data, int N) {
         for (int k = block_size << 1; k < (N << 1); k <<= 1){
             for (int j = k >> 1; j >= block_size; j >>= 1){
                 global_sort_single_iteration_kernel<<<block_num, block_size>>>(data, more_data, N, k, j);
-                // cudaDeviceSynchronize();
+                cudaDeviceSynchronize();
             }
             // global_sort_multiple_iterations_kernel<<<block_num, block_size>>>(data, more_data, N, k);
-            // cudaDeviceSynchronize();
+            cudaDeviceSynchronize();
         }
     }
     if (delta)
