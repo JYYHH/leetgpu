@@ -1,4 +1,4 @@
-## [LeetGPU Soring](https://leetgpu.com/challenges/sorting)
+## [LeetGPU Sorting](https://leetgpu.com/challenges/sorting)
 - The main idea is implementing the [Bitonic sorter](https://en.wikipedia.org/wiki/Bitonic_sorter) on CUDA GPUs. The parallel algorithm has work $O(nlog^2\ n)$ and depth $O(log^2\ n)$.
 - All the speeds showed below assume data size = $2^{20}\approx 10^6$.
 ### V0: Initial Version (commit 4c76ab513045193f1cbf9172bb441bcb65bf1983)
