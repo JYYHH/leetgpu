@@ -11,10 +11,10 @@ __global__ void hist_kernel(const int* input, int* histogram, int N) {
     const int bid = blockIdx.x;
     const int offset = bid * BLOCK_SIZE * ELEMENT_PER_THREAD + tid * ELEMENT_PER_THREAD;
 
-    __shared__ int s_hist[bin_size >> 1];
+    __shared__ int s_hist[bin_size];
     // initialize the histogram
     #pragma unroll
-    for (int i = tid; (i << 1) < bin_size; i += BLOCK_SIZE) {
+    for (int i = tid; i < bin_size; i += BLOCK_SIZE) {
         s_hist[i] = 0;
     }
 
@@ -23,16 +23,15 @@ __global__ void hist_kernel(const int* input, int* histogram, int N) {
     // count the histogram
     #pragma unroll
     for (int i = offset; i < offset + ELEMENT_PER_THREAD && i < N; i ++) {
-        atomicAdd(s_hist + (input[i] >> 1), 1 << ((input[i] & 1) << 4));
+        atomicAdd(s_hist + input[i], 1);
     }
 
     __syncthreads();
 
     // add the local histogram to the global histogram
     #pragma unroll
-    for (int i = tid; (i << 1) < bin_size; i += BLOCK_SIZE) {
-        atomicAdd(histogram + (i << 1), s_hist[i] & 0xFFFF);
-        atomicAdd(histogram + ((i << 1) | 1), (s_hist[i] >> 16) & 0xFFFF);
+    for (int i = tid; i < bin_size; i += BLOCK_SIZE) {
+        atomicAdd(histogram + i, s_hist[i]);
     }
 }
 
@@ -41,7 +40,9 @@ void solve(const int* input, int* histogram, int N, int num_bins) {
     const int blk_elements = BLOCK_SIZE * ELEMENT_PER_THREAD;
     const int block_num = (N + blk_elements - 1) / blk_elements;
 
-    if (num_bins <= 512) {
+    if (num_bins <= 256) {
+        hist_kernel<256><<<block_num, BLOCK_SIZE>>>(input, histogram, N);
+    } else if (num_bins <= 512) {
         hist_kernel<512><<<block_num, BLOCK_SIZE>>>(input, histogram, N);
     } else {
         hist_kernel<1024><<<block_num, BLOCK_SIZE>>>(input, histogram, N);
@@ -50,8 +51,8 @@ void solve(const int* input, int* histogram, int N, int num_bins) {
 }
 
 int main(){
-    int N = 1024;
-    int num_bins = 16;
+    int N = 100000000;
+    int num_bins = 1024;
     int* input = (int*)malloc(N * sizeof(int));
     int* histogram = (int*)malloc(num_bins * sizeof(int));
     int *input_d, *histogram_d;
@@ -62,13 +63,16 @@ int main(){
     }
     cudaMemcpy(input_d, input, N * sizeof(int), cudaMemcpyHostToDevice);
     cudaMemset(histogram_d, 0, num_bins * sizeof(int));
+    clock_t start = clock();
     solve(input_d, histogram_d, N, num_bins);
+    clock_t end = clock();
+    printf("Time: %f ms\n", (double)(end - start) / CLOCKS_PER_SEC * 1000);
     cudaMemcpy(histogram, histogram_d, num_bins * sizeof(int), cudaMemcpyDeviceToHost);
 
-    for (int i = 0; i < num_bins; i++) {
-        printf("%d ", histogram[i]);
-    }
-    printf("\n");
+    // for (int i = 0; i < num_bins; i++) {
+    //     printf("%d ", histogram[i]);
+    // }
+    // printf("\n");
     free(input);
     free(histogram);
     cudaFree(input_d);
