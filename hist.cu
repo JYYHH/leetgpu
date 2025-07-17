@@ -9,7 +9,8 @@ template<int bin_size>
 __global__ void hist_kernel(const int* input, int* histogram, int N) {
     const int tid = threadIdx.x;
     const int bid = blockIdx.x;
-    const int offset = bid * BLOCK_SIZE * ELEMENT_PER_THREAD + tid * ELEMENT_PER_THREAD;
+    const int offset = bid * BLOCK_SIZE + tid;
+    const int stride = blockDim.x * gridDim.x;
 
     __shared__ int s_hist[bin_size];
     // initialize the histogram
@@ -22,7 +23,7 @@ __global__ void hist_kernel(const int* input, int* histogram, int N) {
 
     // count the histogram
     #pragma unroll
-    for (int i = offset; i < offset + ELEMENT_PER_THREAD && i < N; i ++) {
+    for (int i = offset; i < N; i += stride) {
         atomicAdd(s_hist + input[i], 1);
     }
 
