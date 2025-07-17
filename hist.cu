@@ -5,6 +5,10 @@
 const int BLOCK_SIZE = 256;
 const int ELEMENT_PER_THREAD = 8;
 
+__device__ int sum_reduce(int4 a){
+    return a.x + a.y + a.z + a.w;
+}
+
 template<int bin_size>
 __global__ void hist_kernel(const int* input, int* histogram, int N) {
     const int tid = threadIdx.x;
@@ -12,11 +16,12 @@ __global__ void hist_kernel(const int* input, int* histogram, int N) {
     const int offset = bid * BLOCK_SIZE + tid;
     const int stride = blockDim.x * gridDim.x;
 
-    __shared__ int s_hist[bin_size];
+    __shared__ int s_hist[bin_size << 2];
+    int4 *s_hist_int4 = reinterpret_cast<int4 *>(s_hist);
     // initialize the histogram
     #pragma unroll
     for (int i = tid; i < bin_size; i += BLOCK_SIZE) {
-        s_hist[i] = 0;
+        s_hist_int4[i] = make_int4(0, 0, 0, 0);
     }
 
     __syncthreads();
@@ -24,7 +29,7 @@ __global__ void hist_kernel(const int* input, int* histogram, int N) {
     // count the histogram
     #pragma unroll
     for (int i = offset; i < N; i += stride) {
-        atomicAdd(s_hist + input[i], 1);
+        atomicAdd(s_hist + ((input[i] << 2) | (tid & 3)), 1);
     }
 
     __syncthreads();
@@ -32,7 +37,7 @@ __global__ void hist_kernel(const int* input, int* histogram, int N) {
     // add the local histogram to the global histogram
     #pragma unroll
     for (int i = tid; i < bin_size; i += BLOCK_SIZE) {
-        atomicAdd(histogram + i, s_hist[i]);
+        atomicAdd(histogram + i, sum_reduce(s_hist_int4[i]));
     }
 }
 
@@ -40,8 +45,13 @@ __global__ void hist_kernel(const int* input, int* histogram, int N) {
 void solve(const int* input, int* histogram, int N, int num_bins) {
     const int blk_elements = BLOCK_SIZE * ELEMENT_PER_THREAD;
     const int block_num = (N + blk_elements - 1) / blk_elements;
-
-    if (num_bins <= 256) {
+    if (num_bins <= 64) {
+        hist_kernel<64><<<block_num, BLOCK_SIZE>>>(input, histogram, N);
+    }
+    else if (num_bins <= 128) {
+        hist_kernel<128><<<block_num, BLOCK_SIZE>>>(input, histogram, N);
+    }
+    else if (num_bins <= 256) {
         hist_kernel<256><<<block_num, BLOCK_SIZE>>>(input, histogram, N);
     } else if (num_bins <= 512) {
         hist_kernel<512><<<block_num, BLOCK_SIZE>>>(input, histogram, N);
