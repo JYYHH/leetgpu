@@ -2,9 +2,9 @@
 #include <cuda_runtime.h>
 #include <stdio.h>
 
-const int THREADS_PER_BLOCK = 256;
+const int THREADS_PER_BLOCK = 1024;
 const int UNIT_PER_BLOCK = THREADS_PER_BLOCK << 1;
-const int THREADS_PER_BLOCK_LOG = 8;
+const int THREADS_PER_BLOCK_LOG = 10;
 
 __device__ float _my_get(const float *data, const float *more_data, const int N, const int global_id){
     if (global_id < N)
@@ -50,8 +50,8 @@ __global__ void initialize_and_local_sort_kernel(float* data, float* more_data, 
                 shared_data[left_id] = right_data;
                 shared_data[right_id] = left_data;
             }
+            __syncthreads();
         }
-        __syncthreads();
     }
     
     // save data to global memory
@@ -120,16 +120,15 @@ void solve(float* data, int N) {
     cudaDeviceSynchronize();
     // after that local sort, the first block (UNIT_PER_BLOCK elements) will be in ascending order, second in descending order, third in ascending order, etc...
 
-    if (block_num_log){
-        // We need to sort among blocks
-        for (int k = block_size << 2; k < (N << 1); k <<= 1){ // since we change the kernel of local sort
-            for (int j = k >> 1; j > block_size; j >>= 1){
-                global_sort_single_iteration_kernel<<<(block_num >> 1), block_size>>>(data, more_data, N, k, j);
-                cudaDeviceSynchronize();
-            }
-            global_sort_multiple_iterations_kernel<<<(block_num >> 1), block_size>>>(data, more_data, N, k);
+    for (int k = block_size << 2; k < (N << 1); k <<= 1){ // since we change the kernel of local sort
+        for (int j = k >> 1; j > block_size; j >>= 1){
+            // printf("k: %d, j: %d\n", k, j);
+            global_sort_single_iteration_kernel<<<(block_num >> 1), block_size>>>(data, more_data, N, k, j);
             cudaDeviceSynchronize();
         }
+        // printf("k: %d\n", k);
+        global_sort_multiple_iterations_kernel<<<(block_num >> 1), block_size>>>(data, more_data, N, k);
+        cudaDeviceSynchronize();
     }
     if (delta)
         cudaFree(more_data);
@@ -138,7 +137,7 @@ void solve(float* data, int N) {
 int main(){
     int n;
     // scanf("%d", &n);
-    n = 1 << 20;
+    n = 1 << 16;
     float* data = (float*)malloc(n * sizeof(float));
     for (int i = 0; i < n; i += 2)
         // scanf("%f", &data[i]);
@@ -161,8 +160,11 @@ int main(){
     // printf("\n");
     int incorrect = 0;
     for (int i = 0; i < n; i ++)
-        if (data[i] != i + 1)
+        if (data[i] != i + 1){
             incorrect ++;
+            if (incorrect < 10)
+                printf("%d: %f\n", i, data[i]);
+        }
     printf("incorrect: %d\n", incorrect);
     cudaFree(data_device);
     free(data);
