@@ -86,21 +86,29 @@ __global__ void global_sort_multiple_iterations_kernel(float* data, float* more_
     const int tid = threadIdx.x;
     const int bid = blockIdx.x;
     const int block_size = blockDim.x;
-    const int global_id = bid * block_size + tid;
+    const int global_id = bid * UNIT_PER_BLOCK + tid;
     const int de_or_in = (bid & (k >> (THREADS_PER_BLOCK_LOG + 1))) > 0;
+    __shared__ float shared_data[UNIT_PER_BLOCK];
+
+    shared_data[tid] = _my_get(data, more_data, N, global_id);
+    shared_data[tid + block_size] = _my_get(data, more_data, N, global_id + block_size);
+    __syncthreads();
 
     for (int j = block_size; j; j >>= 1){
-        const int left_id = global_id + global_id / j * j;
+        const int left_id = tid + tid / j * j;
         const int right_id = left_id ^ j;
 
-        float left_data = _my_get(data, more_data, N, left_id);
-        float right_data = _my_get(data, more_data, N, right_id);
+        float left_data = shared_data[left_id];
+        float right_data = shared_data[right_id];
         if ((left_data > right_data) ^ de_or_in){
-            _my_set(data, more_data, N, left_id, right_data);
-            _my_set(data, more_data, N, right_id, left_data);
+            shared_data[left_id] = right_data;
+            shared_data[right_id] = left_data;
         }   
         __syncthreads();
     }
+
+    _my_set(data, more_data, N, global_id, shared_data[tid]);
+    _my_set(data, more_data, N, global_id + block_size, shared_data[tid + block_size]);
 }
 
 // data is device pointer
@@ -137,7 +145,7 @@ void solve(float* data, int N) {
 int main(){
     int n;
     // scanf("%d", &n);
-    n = 1 << 16;
+    n = 1 << 20;
     float* data = (float*)malloc(n * sizeof(float));
     for (int i = 0; i < n; i += 2)
         // scanf("%f", &data[i]);
