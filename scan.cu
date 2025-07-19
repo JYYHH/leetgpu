@@ -60,13 +60,17 @@ void solve(const float* input, float* output, int N) {
     // init
     const int BLOCK_SIZE_1 = 256;
     const int BLOCK_ELEMENTS_1 = BLOCK_SIZE_1 << 1;
-    const int BLOCK_SIZE_2 = 128;
+    const int BLOCK_SIZE_2 = 256;
     const int BLOCK_ELEMENTS_2 = BLOCK_SIZE_2 << 1;
+    const int BLOCK_SIZE_3 = 256;
+    const int BLOCK_ELEMENTS_3 = BLOCK_SIZE_3 << 1;
     int blk_num_1s = (N + BLOCK_ELEMENTS_1 - 1) / BLOCK_ELEMENTS_1;
     int blk_num_2s = (blk_num_1s + BLOCK_ELEMENTS_2 - 1) / BLOCK_ELEMENTS_2;
-    float* output_1s, *output_2s;
+    int blk_num_3s = (blk_num_2s + BLOCK_ELEMENTS_3 - 1) / BLOCK_ELEMENTS_3;
+    float* output_1s, *output_2s, *output_3s;
     cudaMalloc(&output_1s, blk_num_1s * sizeof(float));
     cudaMalloc(&output_2s, blk_num_2s * sizeof(float));
+    cudaMalloc(&output_3s, blk_num_3s * sizeof(float));
     // first level scan
     scan_kernel<BLOCK_SIZE_1><<<blk_num_1s, BLOCK_SIZE_1>>>(input, output, output_1s, N);
     cudaDeviceSynchronize();
@@ -74,7 +78,7 @@ void solve(const float* input, float* output, int N) {
     scan_kernel<BLOCK_SIZE_2><<<blk_num_2s, BLOCK_SIZE_2>>>(output_1s, output_1s, output_2s, blk_num_1s);
     cudaDeviceSynchronize();
     // third level scan
-    scan_kernel_serial<<<1, 1>>>(output_2s, blk_num_2s);
+    scan_kernel<BLOCK_SIZE_3><<<blk_num_3s, BLOCK_SIZE_3>>>(output_2s, output_2s, output_3s, blk_num_2s);
     cudaDeviceSynchronize();
     // walk back
     walk_back_kernel<<<blk_num_1s, BLOCK_ELEMENTS_1>>>(BLOCK_ELEMENTS_2, output, output_1s, output_2s, N);
@@ -82,6 +86,7 @@ void solve(const float* input, float* output, int N) {
     // free memory
     cudaFree(output_1s);
     cudaFree(output_2s);
+    cudaFree(output_3s);
 }
 
 int main() {
