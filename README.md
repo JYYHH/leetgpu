@@ -20,3 +20,13 @@
     3. Final layer's serial scan is just trivial, with $sumsums[]$ is the prefix of $sumsum[]$. Since now we only have $\lceil\frac{\lceil\frac{N}{blk_1}\rceil}{blk_2}\rceil = \lceil\frac{N}{blk_1 * blk_2}\rceil$ elements to handle with.
     4. In the end, we need to add back all the contribution: $\forall\ i,\ s[i] + (\lfloor\frac{i}{blk_1}\rfloor > 0\ (mod\ blk_2) \ ?\  sums[\lfloor\frac{i}{blk_1}\rfloor - 1] : 0) + (\lfloor\frac{i}{blk_1 * blk_2}\rfloor > 0 \ ?\  sumsums[\lfloor\frac{i}{blk_1 * blk_2}\rfloor - 1] : 0) = \sum_{j=0}^i a[i]$ is what we want, and it's just what the kernel call `walk_back_kernel<<<blk_num_1s, BLOCK_ELEMENTS_1>>>(BLOCK_ELEMENTS_2, output, output_1s, output_2s, N);` is doing.
 
+### Best Config
+#### for NVIDIA TESLA T4
+- commit: 85ab17464a6560a8a3ca5e6456078b1ba2557e27
+- BLOCK_SIZE_1: 512
+- BLOCK_SIZE_2: 512
+
+#### for NVIDIA A100-80GB
+- commit: 85ab17464a6560a8a3ca5e6456078b1ba2557e27
+- BLOCK_SIZE_1: 256
+- BLOCK_SIZE_2: 64
