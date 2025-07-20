@@ -122,4 +122,5 @@ __global__ void MatrixMultiplyKernel_simple(
         2. `Initializing A_shared[]/B_shared[]` of gloabl
         3. `Initializing A_shared[]/B_shared[]` of shared
 
-
+### 3. Use Local Tiling to futher accelerate GEMM (commit: ffa8c7db985874f4a5b025b0bf4283ba4865f437)
+- We let each thread to compute `LOCAL_TILE_LENGTH x LOCAL_TILE_LENGTH` elements of $C[]$ instead of `1 x 1`, and the key is the `LOCAL_TILE_LENGTH x LOCAL_TILE_LENGTH` elements of $C[]$ could be expressed as the sum (reduction dimension `k`) of the `outer` of a col vector of $A[]$ and a row vector of $B[]$. The latter could further saved in local memory from the shared memeory, and each element of them will be reused `LOCAL_TILE_LENGTH` times (which is the property of the outer).
