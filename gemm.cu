@@ -4,33 +4,10 @@
 #include <cstdio>
 #include <cstring>
 
-const int N_TILE_SIZE = 32;
-const int M_TILE_SIZE = 32;
-const int K_TILE_SIZE = 32;
-
-// __global__ void MatrixMultiplyKernel_simple(
-//     const half* A,
-//     const half* B,
-//     half* C,
-//     const int M,
-//     const int K,
-//     const int N,
-//     float alpha,
-//     float beta
-// ){
-    
-//     // since in a warp, we have 32 threads in different threadIdx.x
-//   const int row = blockIdx.y * blockDim.y + threadIdx.y;
-//   const int col = blockIdx.x * blockDim.x + threadIdx.x;
-
-//   float ret = 0.0; // one element in out matrix
-//   if (row < M && col < N) {
-//     for (int i = 0; i < K; i++) {
-//         ret += __half2float(A[row * K + i]) * __half2float(B[i * N + col]);
-//     }
-//     C[row * N + col] = __float2half(ret * alpha + __half2float(C[row * N + col]) * beta);
-//   }
-// }
+const int N_TILE_SIZE = 64;
+const int M_TILE_SIZE = 64;
+const int K_TILE_SIZE = 64;
+const int LOCAL_TILE_LENGTH = 4; // must be the divisor of N_TILE_SIZE and M_TILE_SIZE and K_TILE_SIZE
 
 // first trivial version, one thread per output element, and for one tile of k, one thread just read one A and one B
 __global__ void MatrixMultiplyKernel(
@@ -46,44 +23,71 @@ __global__ void MatrixMultiplyKernel(
 
     __shared__ half A_shared[N_TILE_SIZE][K_TILE_SIZE];
     __shared__ half B_shared[K_TILE_SIZE][M_TILE_SIZE];
+    half A_shared_local[LOCAL_TILE_LENGTH];
+    half B_shared_local[LOCAL_TILE_LENGTH];
+    float matmul_local[LOCAL_TILE_LENGTH * LOCAL_TILE_LENGTH];
+    // init the local sum
+    for (int i = 0; i < LOCAL_TILE_LENGTH; i++) {
+        for (int j = 0; j < LOCAL_TILE_LENGTH; j++) {
+            matmul_local[i * LOCAL_TILE_LENGTH + j] = 0.0;
+        }
+    }
 
-    // In each block, we will compute a batch of the output matrix
-    // All the threads in the block will work together to compute this batch
     const int row_offset = threadIdx.y;
     const int col_offset = threadIdx.x;
-    const int row = blockIdx.y * blockDim.y + row_offset;
-    const int col = blockIdx.x * blockDim.x + col_offset;
     const int reduce_dim = (K + K_TILE_SIZE - 1) / K_TILE_SIZE;
-    float ret = 0.0; // one element in out matrix
 
     // walk through
-    for (int i = 0; i < reduce_dim; i++){
-        A_shared[row_offset][col_offset] = (row < M && (col_offset + i * K_TILE_SIZE) < K) ? A[row * K + col_offset + i * K_TILE_SIZE] : __float2half(0.0);
-        B_shared[row_offset][col_offset] = ((row_offset + i * K_TILE_SIZE) < K && col < N) ? B[(row_offset + i * K_TILE_SIZE) * N + col] : __float2half(0.0);
-        // B_shared[col_offset][row_offset] = ((row_offset + i * K_TILE_SIZE) < K && col < N) ? B[(row_offset + i * K_TILE_SIZE) * N + col] : __float2half(0.0);
-        // sync all threads in this block
+    for (int iter = 0; iter < reduce_dim; iter++){
+        // loading the shared memory
+        for (int i = 0; i < LOCAL_TILE_LENGTH; i++) {
+            for (int j = 0; j < LOCAL_TILE_LENGTH; j++) {
+                const int row_shared = i * blockDim.y + row_offset;
+                const int col_shared = j * blockDim.x + col_offset;
+                const int row_A = blockIdx.y * blockDim.y * LOCAL_TILE_LENGTH + row_shared;
+                const int col_B = blockIdx.x * blockDim.x * LOCAL_TILE_LENGTH + col_shared;
+                const int col_A = iter * K_TILE_SIZE + col_shared;
+                const int row_B = iter * K_TILE_SIZE + row_shared;
+                A_shared[row_shared][col_shared] = (row_A < M && col_A < K) ? A[row_A * K + col_A] : __float2half(0.0);
+                B_shared[row_shared][col_shared] = (row_B < K && col_B < N) ? B[row_B * N + col_B] : __float2half(0.0);
+            }
+        }
         __syncthreads();
+
         // then do the local reduction here
-        for (int j = 0; j < K_TILE_SIZE; j++)
-        ret += __half2float(A_shared[row_offset][j]) * __half2float(B_shared[j][col_offset]);
-        // must have a sync, since next we will load sth. into the shared memory
+        for (int reduct_iter = 0; reduct_iter < K_TILE_SIZE; reduct_iter++){
+            for (int i = 0; i < LOCAL_TILE_LENGTH; i++){
+                A_shared_local[i] = A_shared[i * blockDim.y + row_offset][reduct_iter];
+                B_shared_local[i] = B_shared[reduct_iter][i * blockDim.x + col_offset];
+            }
+            for (int i = 0; i < LOCAL_TILE_LENGTH; i++){
+                for (int j = 0; j < LOCAL_TILE_LENGTH; j++){
+                    matmul_local[i * LOCAL_TILE_LENGTH + j] += __half2float(A_shared_local[i]) * __half2float(B_shared_local[j]);
+                }
+            }
+        }
         __syncthreads();
     }
 
     // save the result
-    if (row < M && col < N)
-        C[row * N + col] = __float2half(ret * alpha + __half2float(C[row * N + col]) * beta);
+    for (int i = 0; i < LOCAL_TILE_LENGTH; i++){
+        for (int j = 0; j < LOCAL_TILE_LENGTH; j++){
+            const int row = blockIdx.y * blockDim.y * LOCAL_TILE_LENGTH + i * blockDim.y + row_offset;
+            const int col = blockIdx.x * blockDim.x * LOCAL_TILE_LENGTH + j * blockDim.x + col_offset;
+            if (row < M && col < N){
+                C[row * N + col] = __float2half(matmul_local[i * LOCAL_TILE_LENGTH + j] * alpha + __half2float(C[row * N + col]) * beta);
+            }
+        }
+    }
+    // if (row < M && col < N)
+    //     C[row * N + col] = __float2half(ret * alpha + __half2float(C[row * N + col]) * beta);
 }
 
 // A, B, and C are device pointers
 void solve(const half* A, const half* B, half* C, int M, int N, int K, float alpha, float beta) {
-    dim3 block(M_TILE_SIZE, N_TILE_SIZE);
+    dim3 block(M_TILE_SIZE / LOCAL_TILE_LENGTH, N_TILE_SIZE / LOCAL_TILE_LENGTH);
     dim3 grid((M + M_TILE_SIZE - 1) / M_TILE_SIZE, (N + N_TILE_SIZE - 1) / N_TILE_SIZE);
-    // if (K <= 256 && M <= 256 && N <= 256) {
-    //     MatrixMultiplyKernel_simple<<<grid, block>>>(A, B, C, M, K, N, alpha, beta);
-    // } else {
     MatrixMultiplyKernel<<<grid, block>>>(A, B, C, M, K, N, alpha, beta);
-    // }
     cudaDeviceSynchronize();
 }
 
