@@ -10,7 +10,7 @@ __device__ int sum_reduce(int4 a){
 }
 
 template<int bin_size>
-__global__ void hist_kernel(const int* input, int* histogram, int N) {
+__global__ void hist_kernel(const int* input, int* histogram, int N, int true_bin) {
     const int tid = threadIdx.x;
     const int bid = blockIdx.x;
     const int offset = bid * BLOCK_SIZE + tid;
@@ -36,29 +36,32 @@ __global__ void hist_kernel(const int* input, int* histogram, int N) {
 
     // add the local histogram to the global histogram
     #pragma unroll
-    for (int i = tid; i < bin_size; i += BLOCK_SIZE) {
+    for (int i = tid; i < true_bin; i += BLOCK_SIZE) {
         atomicAdd(histogram + i, sum_reduce(s_hist_int4[i]));
     }
 }
 
 // input, histogram are device pointers
-void solve(const int* input, int* histogram, int N, int num_bins) {
+extern "C" void solve(const int* input, int* histogram, int N, int num_bins) {
     const int blk_elements = BLOCK_SIZE * ELEMENT_PER_THREAD;
     const int block_num = (N + blk_elements - 1) / blk_elements;
+    int *histogram_host = (int *)malloc(num_bins * 4);
+    memset(histogram_host, 0, num_bins * 4);
+    cudaMemcpy(histogram, histogram_host, num_bins * sizeof(int), cudaMemcpyHostToDevice);
     if (num_bins <= 64) {
-        hist_kernel<64><<<block_num, BLOCK_SIZE>>>(input, histogram, N);
+        hist_kernel<64><<<block_num, BLOCK_SIZE>>>(input, histogram, N, num_bins);
     }
     else if (num_bins <= 128) {
-        hist_kernel<128><<<block_num, BLOCK_SIZE>>>(input, histogram, N);
+        hist_kernel<128><<<block_num, BLOCK_SIZE>>>(input, histogram, N, num_bins);
     }
     else if (num_bins <= 256) {
-        hist_kernel<256><<<block_num, BLOCK_SIZE>>>(input, histogram, N);
+        hist_kernel<256><<<block_num, BLOCK_SIZE>>>(input, histogram, N, num_bins);
     } else if (num_bins <= 512) {
-        hist_kernel<512><<<block_num, BLOCK_SIZE>>>(input, histogram, N);
+        hist_kernel<512><<<block_num, BLOCK_SIZE>>>(input, histogram, N, num_bins);
     } else {
-        hist_kernel<1024><<<block_num, BLOCK_SIZE>>>(input, histogram, N);
+        hist_kernel<1024><<<block_num, BLOCK_SIZE>>>(input, histogram, N, num_bins);
     }
-    // cudaDeviceSynchronize();
+    cudaDeviceSynchronize();
 }
 
 int main(){
