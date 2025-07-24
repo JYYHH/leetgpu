@@ -1,6 +1,7 @@
 #include <cuda_runtime.h>
 #include <stdio.h>
 #include <random>
+#include <time.h>
 #define DEBUG
 
 const int BLOCK_SIZE = 256;
@@ -12,7 +13,7 @@ __device__ void sequential_reduce(float *max_local, float *sum_local, const floa
     #pragma unroll
     for (int i = start; i < end; i += stride) {
         new_max_local = fmaxf(*max_local, input[i]);
-        *sum_local = *sum_local * expf(*max_local - new_max_local) + expf(input[i] - new_max_local);
+        *sum_local = *sum_local * __expf(*max_local - new_max_local) + __expf(input[i] - new_max_local);
         *max_local = new_max_local;
     }
 }
@@ -23,7 +24,7 @@ __device__ void sequential_reduce_aftermap(float *max_local, float *sum_local, c
     #pragma unroll
     for (int i = start; i < end; i += stride) {
         new_max_local = fmaxf(*max_local, input_float2[i].y);
-        *sum_local = *sum_local * expf(*max_local - new_max_local) + input_float2[i].x * expf(input_float2[i].y - new_max_local);
+        *sum_local = *sum_local * __expf(*max_local - new_max_local) + input_float2[i].x * __expf(input_float2[i].y - new_max_local);
         *max_local = new_max_local;
     }
 }
@@ -34,12 +35,13 @@ __device__ void warp_reduce(float *max_local, float *sum_local, const int delta_
         new_max = __shfl_down_sync(0xFFFFFFFF, *max_local, delta);
         new_sum = __shfl_down_sync(0xFFFFFFFF, *sum_local, delta);
         new_max_local = fmaxf(*max_local, new_max);
-        *sum_local = *sum_local * expf(*max_local - new_max_local) + new_sum * expf(new_max - new_max_local);
+        *sum_local = *sum_local * __expf(*max_local - new_max_local) + new_sum * __expf(new_max - new_max_local);
         *max_local = new_max_local;
     }
 }
 
-__global__ void sum_and_max_local_kernel(const float* input, float2* output, const int N) {
+template <void (*reduce_kernel_pointer)(float *, float *, const float *, const int, const int, const int)>
+__global__ void sum_and_max_kernel(const float* input, float2* output, const int N) {
     const int tid = threadIdx.x, bid = blockIdx.x, stride = blockDim.x * gridDim.x;
     const int warp_id = tid >> WARP_SIZE_LOG2, lane_id = tid & (WARP_SIZE - 1);
     const int warp_num = blockDim.x >> WARP_SIZE_LOG2;
@@ -47,7 +49,7 @@ __global__ void sum_and_max_local_kernel(const float* input, float2* output, con
     __shared__ float shared_array[BLOCK_SIZE >> (WARP_SIZE_LOG2 - 1)];
 
     // step 1: reduce over stride
-    sequential_reduce(&max_local, &sum_local, input, tid + bid * blockDim.x, N, stride);
+    (*reduce_kernel_pointer)(&max_local, &sum_local, input, tid + bid * blockDim.x, N, stride);
 
     // step 2: reduce inside the warp
     warp_reduce(&max_local, &sum_local, WARP_SIZE >> 1);
@@ -76,22 +78,6 @@ __global__ void sum_and_max_local_kernel(const float* input, float2* output, con
     }
 }
 
-__global__ void sum_and_max_global_kernel(const float* input, float2 *combined_sum_max, const int blocksPerGrid) {
-    const int tid = threadIdx.x;
-    float sum_local = 0.0f, max_local = 0.0f;
-
-    // step 1: sequential reduce
-    sequential_reduce_aftermap(&max_local, &sum_local, input, tid, blocksPerGrid, WARP_SIZE);
-
-    // step 2: reduce inside the warp
-    warp_reduce(&max_local, &sum_local, WARP_SIZE >> 1);
-
-    // step 3: update the global max and sum
-    if (tid == 0){
-        combined_sum_max[0] = make_float2(sum_local, max_local);
-    }
-}
-
 __global__ void softmax_kernel(const float* input, float* output, const float2* combined_sum_max, const int N) {
     const int stride = blockDim.x * gridDim.x;
     const float sum_global = combined_sum_max[0].x;
@@ -99,7 +85,7 @@ __global__ void softmax_kernel(const float* input, float* output, const float2* 
 
     #pragma unroll
     for (int i = threadIdx.x + blockIdx.x * blockDim.x; i < N; i += stride) {
-        output[i] = expf(input[i] - max_global) / sum_global;
+        output[i] = __expf(input[i] - max_global) / sum_global;
     }
 }
 
@@ -111,14 +97,14 @@ void solve(const float* input, float* output, int N) {
     cudaMalloc(&combined_output, sizeof(float2));
     
     if (blocksPerGrid > 1){
-        sum_and_max_local_kernel<<<blocksPerGrid, threadsPerBlock>>>(input, (float2 *)output, N);
+        sum_and_max_kernel<sequential_reduce><<<blocksPerGrid, threadsPerBlock>>>(input, (float2 *)output, N);
         cudaDeviceSynchronize();
 
-        sum_and_max_global_kernel<<<1, WARP_SIZE>>>(output, combined_output, blocksPerGrid);
+        sum_and_max_kernel<sequential_reduce_aftermap><<<1, threadsPerBlock>>>(output, combined_output, blocksPerGrid);
         cudaDeviceSynchronize();
     }
     else{
-        sum_and_max_local_kernel<<<1, threadsPerBlock>>>(input, combined_output, N);
+        sum_and_max_kernel<sequential_reduce><<<blocksPerGrid, threadsPerBlock>>>(input, combined_output, N);
         cudaDeviceSynchronize();
     }
 
@@ -150,7 +136,7 @@ void solve_CPU(const float* input, float* output, int N){
 }
 
 int main(){
-    int N = 128;
+    int N = 1 << 26;
     float *input = (float *)malloc(N * sizeof(float));
     float *output = (float *)malloc(N * sizeof(float));
     float *output_cpu = (float *)malloc(N * sizeof(float));
@@ -162,8 +148,14 @@ int main(){
     cudaMalloc(&output_d, N * sizeof(float));
     cudaMemcpy(input_d, input, N * sizeof(float), cudaMemcpyHostToDevice);
 
+    time_t start = clock();
     solve(input_d, output_d, N);
+    time_t end = clock();
+    printf("GPU time: %f seconds\n", (double)(end - start) / CLOCKS_PER_SEC);
+    start = clock();
     solve_CPU(input, output_cpu, N);
+    end = clock();
+    printf("CPU time: %f seconds\n", (double)(end - start) / CLOCKS_PER_SEC);
     cudaMemcpy(output, output_d, N * sizeof(float), cudaMemcpyDeviceToHost);
     for (int i = 0; i < N; i++) if (abs(output[i] - output_cpu[i]) > 1e-6){
         printf("Error at index %d: %f vs %f\n", i, output[i], output_cpu[i]);
