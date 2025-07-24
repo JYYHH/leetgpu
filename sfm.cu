@@ -1,11 +1,11 @@
 #include <cuda_runtime.h>
-#include <stdio.h>
-#include <random>
-#include <time.h>
-#define DEBUG
+// #include <stdio.h>
+// #include <random>
+// #include <time.h>
+// #define DEBUG
 
 const int BLOCK_SIZE = 256;
-const int ELEMENTS_PER_THREAD = 8;
+const int ELEMENTS_PER_THREAD = 32;
 const int WARP_SIZE = 32, WARP_SIZE_LOG2 = 5;
 
 __device__ void sequential_reduce(float *max_local, float *sum_local, const float *input, const int start, const int end, const int stride){
@@ -50,23 +50,25 @@ __global__ void sum_and_max_kernel(const float* input, float2* output, const int
 
     // step 2: reduce inside the warp
     warp_reduce(&max_local, &sum_local, WARP_SIZE >> 1);
-    if (lane_id == 0){
-        shared_array[warp_id] = max_local;
-        shared_array[warp_id + warp_num] = sum_local;
-    }
-    __syncthreads();
+    if (warp_num > 1){
+        if (lane_id == 0){
+            shared_array[warp_id] = max_local;
+            shared_array[warp_id + warp_num] = sum_local;
+        }
+        __syncthreads();
 
-    // step 3: reduce inside the block, use the first warp
-    if (warp_id == 0){
-        if (lane_id < warp_num){
-            max_local = shared_array[lane_id];
-            sum_local = shared_array[lane_id + warp_num];
+        // step 3: reduce inside the block, use the first warp
+        if (warp_id == 0){
+            if (lane_id < warp_num){
+                max_local = shared_array[lane_id];
+                sum_local = shared_array[lane_id + warp_num];
+            }
+            else{
+                max_local = 0.0f;
+                sum_local = 0.0f;
+            }
+            warp_reduce(&max_local, &sum_local, warp_num >> 1);
         }
-        else{
-            max_local = 0.0f;
-            sum_local = 0.0f;
-        }
-        warp_reduce(&max_local, &sum_local, warp_num >> 1);
     }
 
     // step 4: update the global max and sum
@@ -95,25 +97,18 @@ void solve(const float* input, float* output, int N) {
     
     if (blocksPerGrid > 1){
         sum_and_max_kernel<sequential_reduce><<<blocksPerGrid, threadsPerBlock>>>(input, (float2 *)output, N);
-        cudaDeviceSynchronize();
+        // cudaDeviceSynchronize();
 
-        sum_and_max_kernel<sequential_reduce_aftermap><<<1, threadsPerBlock>>>(output, combined_output, blocksPerGrid);
-        cudaDeviceSynchronize();
+        sum_and_max_kernel<sequential_reduce_aftermap><<<1, 32>>>(output, combined_output, blocksPerGrid);
+        // cudaDeviceSynchronize();
     }
     else{
         sum_and_max_kernel<sequential_reduce><<<blocksPerGrid, threadsPerBlock>>>(input, combined_output, N);
-        cudaDeviceSynchronize();
+        // cudaDeviceSynchronize();
     }
 
-    #ifdef DEBUG
-    float2 *combined_output_host = (float2 *)malloc(sizeof(float2));
-    cudaMemcpy(combined_output_host, combined_output, sizeof(float2), cudaMemcpyDeviceToHost);
-    printf("GPU: max = %f, sum = %f\n", combined_output_host->y, combined_output_host->x);
-    free(combined_output_host);
-    #endif
-
     softmax_kernel<<<blocksPerGrid, threadsPerBlock>>>(input, output, combined_output, N);
-    cudaDeviceSynchronize();
+    // cudaDeviceSynchronize();
 
     cudaFree(combined_output);
 }
