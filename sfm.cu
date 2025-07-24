@@ -1,103 +1,94 @@
 #include <cuda_runtime.h>
 #include <stdio.h>
 #include <random>
-#define DEBUG 0
+#define DEBUG
 
 const int BLOCK_SIZE = 256;
 const int ELEMENTS_PER_THREAD = 8;
-const int WARP_SIZE = 32;
+const int WARP_SIZE = 32, WARP_SIZE_LOG2 = 5;
+
+__device__ void sequential_reduce(float *max_local, float *sum_local, const float *input, const int start, const int end, const int stride){
+    float new_max_local;
+    #pragma unroll
+    for (int i = start; i < end; i += stride) {
+        new_max_local = fmaxf(*max_local, input[i]);
+        *sum_local = *sum_local * expf(*max_local - new_max_local) + expf(input[i] - new_max_local);
+        *max_local = new_max_local;
+    }
+}
+
+__device__ void sequential_reduce_aftermap(float *max_local, float *sum_local, const float *input, const int start, const int end, const int stride){
+    float new_max_local;
+    const float2 *input_float2 = reinterpret_cast<const float2 *>(input);
+    #pragma unroll
+    for (int i = start; i < end; i += stride) {
+        new_max_local = fmaxf(*max_local, input_float2[i].y);
+        *sum_local = *sum_local * expf(*max_local - new_max_local) + input_float2[i].x * expf(input_float2[i].y - new_max_local);
+        *max_local = new_max_local;
+    }
+}
+__device__ void warp_reduce(float *max_local, float *sum_local, const int delta_start){
+    float new_max, new_sum, new_max_local;
+    #pragma unroll
+    for (int delta = delta_start; delta > 0; delta >>= 1){
+        new_max = __shfl_down_sync(0xFFFFFFFF, *max_local, delta);
+        new_sum = __shfl_down_sync(0xFFFFFFFF, *sum_local, delta);
+        new_max_local = fmaxf(*max_local, new_max);
+        *sum_local = *sum_local * expf(*max_local - new_max_local) + new_sum * expf(new_max - new_max_local);
+        *max_local = new_max_local;
+    }
+}
 
 __global__ void sum_and_max_local_kernel(const float* input, float2* output, const int N) {
-    const int tid = threadIdx.x;
-    const int bid = blockIdx.x;
-    const int stride = blockDim.x * gridDim.x;
-    float sum_local = 0.0f, sum_block;
-    float max_local = -INFINITY, new_max_local, max_block;
-    __shared__ float shared_array[BLOCK_SIZE];
+    const int tid = threadIdx.x, bid = blockIdx.x, stride = blockDim.x * gridDim.x;
+    const int warp_id = tid >> WARP_SIZE_LOG2, lane_id = tid & (WARP_SIZE - 1);
+    const int warp_num = blockDim.x >> WARP_SIZE_LOG2;
+    float sum_local = 0.0f, max_local = 0.0f;
+    __shared__ float shared_array[BLOCK_SIZE >> (WARP_SIZE_LOG2 - 1)];
 
     // step 1: reduce over stride
-    #pragma unroll
-    for (int i = tid + bid * blockDim.x; i < N; i += stride) {
-        new_max_local = fmaxf(max_local, input[i]);
-        sum_local = sum_local * expf(max_local - new_max_local) + expf(input[i] - new_max_local);
-        max_local = new_max_local;
+    sequential_reduce(&max_local, &sum_local, input, tid + bid * blockDim.x, N, stride);
+
+    // step 2: reduce inside the warp
+    warp_reduce(&max_local, &sum_local, WARP_SIZE >> 1);
+    if (lane_id == 0){
+        shared_array[warp_id] = max_local;
+        shared_array[warp_id + warp_num] = sum_local;
     }
     __syncthreads();
 
-    // step 2: reduce max inside the block
-    shared_array[tid] = max_local;
-    __syncthreads();
-    for (int i = BLOCK_SIZE >> 1; i >= WARP_SIZE; i >>= 1) {
-        if (tid & i) {
-            shared_array[tid ^ i] = fmaxf(shared_array[tid ^ i], shared_array[tid]);
+    // step 3: reduce inside the block, use the first warp
+    if (warp_id == 0){
+        if (lane_id < warp_num){
+            max_local = shared_array[lane_id];
+            sum_local = shared_array[lane_id + warp_num];
         }
-        __syncthreads();
-    }
-    for (int i = WARP_SIZE >> 1; i >= 1; i >>= 1) {
-        if (tid & i) {
-            shared_array[tid ^ i] = fmaxf(shared_array[tid ^ i], shared_array[tid]);
+        else{
+            max_local = 0.0f;
+            sum_local = 0.0f;
         }
+        warp_reduce(&max_local, &sum_local, warp_num >> 1);
     }
-    __syncthreads();
-    max_block = shared_array[0];
-    __syncthreads();
-
-    // step 3: reduce sum inside the block
-    shared_array[tid] = sum_local * expf(max_local - max_block);
-    __syncthreads();
-    for (int i = BLOCK_SIZE >> 1; i >= WARP_SIZE; i >>= 1) {
-        if (tid & i) {
-            shared_array[tid ^ i] += shared_array[tid];
-        }
-        __syncthreads();
-    }
-    for (int i = WARP_SIZE >> 1; i >= 1; i >>= 1) {
-        if (tid & i) {
-            shared_array[tid ^ i] += shared_array[tid];
-        }
-    }
-    __syncthreads();
-    sum_block = shared_array[0];
 
     // step 4: update the global max and sum
     if (tid == 0){
-        output[bid] = make_float2(sum_block, max_block);
+        output[bid] = make_float2(sum_local, max_local);
     }
 }
 
 __global__ void sum_and_max_global_kernel(const float* input, float2 *combined_sum_max, const int blocksPerGrid) {
     const int tid = threadIdx.x;
-    const int stride = WARP_SIZE;
-    float sum_local = 0.0f, sum_block;
-    float max_local = -INFINITY, new_max_local, max_block;
-    __shared__ float shared_array[WARP_SIZE];
+    float sum_local = 0.0f, max_local = 0.0f;
 
-    const float2 *input_float2 = reinterpret_cast<const float2 *>(input);
-    #pragma unroll
-    for (int i = tid; i < blocksPerGrid; i += stride) {
-        new_max_local = fmaxf(max_local, input_float2[i].y);
-        sum_local = sum_local * expf(max_local - new_max_local) + input_float2[i].x * expf(input_float2[i].y - new_max_local);
-        max_local = new_max_local;
-    }
+    // step 1: sequential reduce
+    sequential_reduce_aftermap(&max_local, &sum_local, input, tid, blocksPerGrid, WARP_SIZE);
 
-    shared_array[tid] = max_local;
-    for (int i = WARP_SIZE >> 1; i >= 1; i >>= 1) {
-        if (tid & i) {
-            shared_array[tid ^ i] = fmaxf(shared_array[tid ^ i], shared_array[tid]);
-        }
-    }
-    max_block = shared_array[0];
+    // step 2: reduce inside the warp
+    warp_reduce(&max_local, &sum_local, WARP_SIZE >> 1);
 
-    shared_array[tid] = sum_local * expf(max_local - max_block);
-    for (int i = WARP_SIZE >> 1; i >= 1; i >>= 1) {
-        if (tid & i) {
-            shared_array[tid ^ i] += shared_array[tid];
-        }
-    }
-    sum_block = shared_array[0];
-
+    // step 3: update the global max and sum
     if (tid == 0){
-        combined_sum_max[0] = make_float2(sum_block, max_block);
+        combined_sum_max[0] = make_float2(sum_local, max_local);
     }
 }
 
@@ -131,12 +122,12 @@ void solve(const float* input, float* output, int N) {
         cudaDeviceSynchronize();
     }
 
-#ifdef DEBUG
+    #ifdef DEBUG
     float2 *combined_output_host = (float2 *)malloc(sizeof(float2));
     cudaMemcpy(combined_output_host, combined_output, sizeof(float2), cudaMemcpyDeviceToHost);
     printf("GPU: max = %f, sum = %f\n", combined_output_host->y, combined_output_host->x);
     free(combined_output_host);
-#endif
+    #endif
 
     softmax_kernel<<<blocksPerGrid, threadsPerBlock>>>(input, output, combined_output, N);
     cudaDeviceSynchronize();
@@ -159,7 +150,7 @@ void solve_CPU(const float* input, float* output, int N){
 }
 
 int main(){
-    int N = 500000;
+    int N = 128;
     float *input = (float *)malloc(N * sizeof(float));
     float *output = (float *)malloc(N * sizeof(float));
     float *output_cpu = (float *)malloc(N * sizeof(float));
