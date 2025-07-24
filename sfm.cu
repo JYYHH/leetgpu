@@ -10,7 +10,6 @@ const int WARP_SIZE = 32, WARP_SIZE_LOG2 = 5;
 
 __device__ void sequential_reduce(float *max_local, float *sum_local, const float *input, const int start, const int end, const int stride){
     float new_max_local;
-    #pragma unroll
     for (int i = start; i < end; i += stride) {
         new_max_local = fmaxf(*max_local, input[i]);
         *sum_local = *sum_local * __expf(*max_local - new_max_local) + __expf(input[i] - new_max_local);
@@ -21,7 +20,6 @@ __device__ void sequential_reduce(float *max_local, float *sum_local, const floa
 __device__ void sequential_reduce_aftermap(float *max_local, float *sum_local, const float *input, const int start, const int end, const int stride){
     float new_max_local;
     const float2 *input_float2 = reinterpret_cast<const float2 *>(input);
-    #pragma unroll
     for (int i = start; i < end; i += stride) {
         new_max_local = fmaxf(*max_local, input_float2[i].y);
         *sum_local = *sum_local * __expf(*max_local - new_max_local) + input_float2[i].x * __expf(input_float2[i].y - new_max_local);
@@ -30,7 +28,6 @@ __device__ void sequential_reduce_aftermap(float *max_local, float *sum_local, c
 }
 __device__ void warp_reduce(float *max_local, float *sum_local, const int delta_start){
     float new_max, new_sum, new_max_local;
-    #pragma unroll
     for (int delta = delta_start; delta > 0; delta >>= 1){
         new_max = __shfl_down_sync(0xFFFFFFFF, *max_local, delta);
         new_sum = __shfl_down_sync(0xFFFFFFFF, *sum_local, delta);
