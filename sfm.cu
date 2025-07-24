@@ -61,14 +61,8 @@ __global__ void sum_and_max_kernel(const float* input, float2* output, const int
 
     // step 3: reduce inside the block, use the first warp
     if (warp_id == 0){
-        if (lane_id < warp_num){
-            max_local = shared_array[lane_id];
-            sum_local = shared_array[lane_id + warp_num];
-        }
-        else{
-            max_local = 0.0f;
-            sum_local = 0.0f;
-        }
+        max_local = shared_array[lane_id];
+        sum_local = shared_array[lane_id + warp_num];
         warp_reduce(&max_local, &sum_local, warp_num >> 1);
     }
 
@@ -136,7 +130,7 @@ void solve_CPU(const float* input, float* output, int N){
 }
 
 int main(){
-    int N = 1 << 26;
+    int N = 1 << 20;
     float *input = (float *)malloc(N * sizeof(float));
     float *output = (float *)malloc(N * sizeof(float));
     float *output_cpu = (float *)malloc(N * sizeof(float));
