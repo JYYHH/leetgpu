@@ -27,6 +27,7 @@ __global__ void MatrixMultiplyKernel(
     half B_shared_local[LOCAL_TILE_LENGTH];
     float matmul_local[LOCAL_TILE_LENGTH * LOCAL_TILE_LENGTH];
     // init the local sum
+    #pragma unroll
     for (int i = 0; i < LOCAL_TILE_LENGTH; i++) {
         for (int j = 0; j < LOCAL_TILE_LENGTH; j++) {
             matmul_local[i * LOCAL_TILE_LENGTH + j] = 0.0;
@@ -40,6 +41,7 @@ __global__ void MatrixMultiplyKernel(
     // walk through
     for (int iter = 0; iter < reduce_dim; iter++){
         // loading the shared memory
+        #pragma unroll
         for (int i = 0; i < LOCAL_TILE_LENGTH; i++) {
             for (int j = 0; j < LOCAL_TILE_LENGTH; j++) {
                 const int row_shared = i * blockDim.y + row_offset;
@@ -60,6 +62,7 @@ __global__ void MatrixMultiplyKernel(
                 A_shared_local[i] = A_shared[i * blockDim.y + row_offset][reduct_iter];
                 B_shared_local[i] = B_shared[reduct_iter][i * blockDim.x + col_offset];
             }
+            #pragma unroll
             for (int i = 0; i < LOCAL_TILE_LENGTH; i++){
                 for (int j = 0; j < LOCAL_TILE_LENGTH; j++){
                     matmul_local[i * LOCAL_TILE_LENGTH + j] += __half2float(A_shared_local[i]) * __half2float(B_shared_local[j]);
@@ -70,6 +73,7 @@ __global__ void MatrixMultiplyKernel(
     }
 
     // save the result
+    #pragma unroll
     for (int i = 0; i < LOCAL_TILE_LENGTH; i++){
         for (int j = 0; j < LOCAL_TILE_LENGTH; j++){
             const int row = blockIdx.y * blockDim.y * LOCAL_TILE_LENGTH + i * blockDim.y + row_offset;
@@ -79,8 +83,6 @@ __global__ void MatrixMultiplyKernel(
             }
         }
     }
-    // if (row < M && col < N)
-    //     C[row * N + col] = __float2half(ret * alpha + __half2float(C[row * N + col]) * beta);
 }
 
 // A, B, and C are device pointers
