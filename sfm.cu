@@ -58,8 +58,14 @@ __global__ void sum_and_max_kernel(const float* input, float2* output, const int
 
     // step 3: reduce inside the block, use the first warp
     if (warp_id == 0){
-        max_local = shared_array[lane_id];
-        sum_local = shared_array[lane_id + warp_num];
+        if (lane_id < warp_num){
+            max_local = shared_array[lane_id];
+            sum_local = shared_array[lane_id + warp_num];
+        }
+        else{
+            max_local = 0.0f;
+            sum_local = 0.0f;
+        }
         warp_reduce(&max_local, &sum_local, warp_num >> 1);
     }
 
