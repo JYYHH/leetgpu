@@ -106,10 +106,11 @@ def sfm_attn_kernel_single_query(
     tl.store(output_ptr + range_q, o, mask = mask_d)
 
 # Q_ptr, K_ptr, V_ptr, output_ptr are raw device pointers
+# only support A100, H100, Tesla T4
 def solve(Q_ptr: int, K_ptr: int, V_ptr: int, output_ptr: int, M: int, N: int, d: int, gpu = "A100"):
-    kernel_select = 0 if gpu == "A100" else 1
-    BQ = 16 if gpu == "A100" else 32
-    BKV = 64 if gpu == "A100" else 32
+    kernel_select = 0 if gpu == "A100" else (0 if gpu == "H100" else 1)
+    BQ = 16 if gpu == "A100" else (16 if gpu == "H100" else 32)
+    BKV = 64 if gpu == "A100" else (64 if gpu == "H100" else 32)
     scale_factor = d ** -0.5
 
     if kernel_select == 0:
