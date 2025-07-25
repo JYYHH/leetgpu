@@ -8,7 +8,7 @@
     2. $B_r$ is the block size of the query, $B_c$ is the block size of the key and value.
     3. $T_c$ is the number of blocks of the key and value. 
 
-$$
+$
 \begin{array}{l}
 \hline
 \textbf{Algorithm 1: FlashAttention-2 Forward Pass} \\
@@ -33,4 +33,4 @@ $$
 \text{16: } \text{Write block } O_i \text{ from registers back to HBM.} \\
 \hline
 \end{array}
-$$
+$
