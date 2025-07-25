@@ -10,9 +10,9 @@
 
 ```math
 \begin{array}{l}
-\hline
+\text{--------------------------------------------------------------------------------------------------------------------}\\
 \textbf{Algorithm 1: FlashAttention-2 Forward Pass} \\
-\hline
+\text{--------------------------------------------------------------------------------------------------------------------}\\
 \textbf{Require:} \text{Matrices } Q, K, V \in \mathbb{R}^{N \times d} \text{ located in HBM.} \\
 \textbf{Parameters:} \text{Block sizes } B_r, B_c. \\
 \text{01: } \text{Let a thread block handle block } i \text{ of } Q. \\
@@ -31,6 +31,6 @@
 \text{14: } \textbf{end for} \\
 \text{15: } O_i \leftarrow \text{diag}(l_i)^{-1} O_i. \quad \textit{// Final normalization, done in registers.} \\
 \text{16: } \text{Write block } O_i \text{ from registers back to HBM.} \\
-\hline
+\text{--------------------------------------------------------------------------------------------------------------------}\\
 \end{array}
 ```
