@@ -18,7 +18,7 @@ $$
 \text{01: } \text{Let a thread block handle block } i \text{ of } Q. \\
 \text{02: } Q_i \leftarrow \text{Load a } B_r \times d \text{ block from } Q \text{ into SRAM.} \\
 \text{03: } O_i \leftarrow \mathbf{0} \in \mathbb{R}^{B_r \times d}; \quad m_i \leftarrow -\infty \in \mathbb{R}^{B_r}; \quad l_i \leftarrow \mathbf{0} \in \mathbb{R}^{B_r}. \\
-\text{04: } T_c \leftarrow \lceil N / B_c \rceil. \\ \hline
+\text{04: } T_c \leftarrow \lceil N / B_c \rceil. \\
 \text{05: } \textbf{for } j=1 \textbf{ to } T_c \textbf{ do} \\
 \text{06: } \quad K_j \leftarrow \text{Load a } B_c \times d \text{ block from } K \text{ into shared memory.} \\
 \text{07: } \quad V_j \leftarrow \text{Load a } B_c \times d \text{ block from } V \text{ into shared memory.} \\
@@ -28,7 +28,7 @@ $$
 \text{11: } \quad l_i \leftarrow e^{m_i - m_i^{\text{new}}} l_i + \text{rowsum}(P_{ij}). \\
 \text{12: } \quad O_i \leftarrow \text{diag}(e^{m_i - m_i^{\text{new}}}) O_i + P_{ij} V_j. \\
 \text{13: } \quad m_i \leftarrow m_i^{\text{new}}. \\
-\text{14: } \textbf{end for} \\ \hline
+\text{14: } \textbf{end for} \\
 \text{15: } O_i \leftarrow \text{diag}(l_i)^{-1} O_i. \quad \textit{// Final normalization, done in registers.} \\
 \text{16: } \text{Write block } O_i \text{ from registers back to HBM.} \\
 \hline
