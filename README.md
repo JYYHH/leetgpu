@@ -8,12 +8,12 @@
     2. $B_r$ is the block size of the query, $B_c$ is the block size of the key and value.
     3. $T_c$ is the number of blocks of the key and value. 
 
-$\begin{array}{l}
+$$ \begin{array}{l}
 \hline
 \textbf{Algorithm 1: FlashAttention-2 Forward Pass} \\
 \hline
-\textbf{Require: } \text{Matrices } Q, K, V \in \mathbb{R}^{N \times d} \text{ located in HBM.} \\
-\textbf{Parameters: } \text{Block sizes } B_r, B_c. \\
+\textbf{Require:} \text{Matrices } Q, K, V \in \mathbb{R}^{N \times d} \text{ located in HBM.} \\
+\textbf{Parameters:} \text{Block sizes } B_r, B_c. \\
 \text{01: } \text{Let a thread block handle block } i \text{ of } Q. \\
 \text{02: } Q_i \leftarrow \text{Load a } B_r \times d \text{ block from } Q \text{ into SRAM.} \\
 \text{03: } O_i \leftarrow \mathbf{0} \in \mathbb{R}^{B_r \times d}; \quad m_i \leftarrow -\infty \in \mathbb{R}^{B_r}; \quad l_i \leftarrow \mathbf{0} \in \mathbb{R}^{B_r}. \\
@@ -31,4 +31,4 @@ $\begin{array}{l}
 \text{15: } O_i \leftarrow \text{diag}(l_i)^{-1} O_i. \quad \textit{// Final normalization, done in registers.} \\
 \text{16: } \text{Write block } O_i \text{ from registers back to HBM.} \\
 \hline
-\end{array}$
+\end{array} $$
