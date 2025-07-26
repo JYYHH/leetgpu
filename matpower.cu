@@ -23,7 +23,7 @@ __global__ void MatrixMultiplyKernel(
     __shared__ float B_shared[K_TILE_SIZE][M_TILE_SIZE];
     float A_shared_local[LOCAL_TILE_LENGTH];
     float B_shared_local[LOCAL_TILE_LENGTH];
-    float matmul_local[LOCAL_TILE_LENGTH * LOCAL_TILE_LENGTH];
+    double matmul_local[LOCAL_TILE_LENGTH * LOCAL_TILE_LENGTH];
     // init the local sum
     #pragma unroll
     for (int i = 0; i < LOCAL_TILE_LENGTH; i++) {
@@ -63,7 +63,7 @@ __global__ void MatrixMultiplyKernel(
             #pragma unroll
             for (int i = 0; i < LOCAL_TILE_LENGTH; i++){
                 for (int j = 0; j < LOCAL_TILE_LENGTH; j++){
-                    matmul_local[i * LOCAL_TILE_LENGTH + j] += A_shared_local[i] * B_shared_local[j];
+                    matmul_local[i * LOCAL_TILE_LENGTH + j] += (double)A_shared_local[i] * (double)B_shared_local[j];
                 }
             }
         }
@@ -77,7 +77,7 @@ __global__ void MatrixMultiplyKernel(
             const int row = blockIdx.y * blockDim.y * LOCAL_TILE_LENGTH + i * blockDim.y + row_offset;
             const int col = blockIdx.x * blockDim.x * LOCAL_TILE_LENGTH + j * blockDim.x + col_offset;
             if (row < M && col < N){
-                C[row * N + col] = matmul_local[i * LOCAL_TILE_LENGTH + j];
+                C[row * N + col] = (float)matmul_local[i * LOCAL_TILE_LENGTH + j];
             }
         }
     }
@@ -104,12 +104,12 @@ void solve(const float* input, float* output, int N, int P) {
         if (P & (1 << i)){
             if (used){
                 if (where_data){
-                    MatrixMultiplyKernel<<<grid, block>>>(input, mid_matrix, output, N, N, N);
-                    MatrixMultiplyKernel<<<grid, block>>>(output, output, mid_matrix, N, N, N); 
+                    MatrixMultiplyKernel<<<grid, block>>>(mid_matrix, mid_matrix, output, N, N, N);
+                    MatrixMultiplyKernel<<<grid, block>>>(input, output, mid_matrix, N, N, N); 
                 }
                 else{
-                    MatrixMultiplyKernel<<<grid, block>>>(input, output, mid_matrix, N, N, N);
-                    MatrixMultiplyKernel<<<grid, block>>>(mid_matrix, mid_matrix, output, N, N, N); 
+                    MatrixMultiplyKernel<<<grid, block>>>(output, output, mid_matrix, N, N, N);
+                    MatrixMultiplyKernel<<<grid, block>>>(input, mid_matrix, output, N, N, N); 
                 }
             }
             else{
@@ -146,3 +146,7 @@ void solve(const float* input, float* output, int N, int P) {
     cudaFree(mid_matrix);
     cudaDeviceSynchronize();
 } 
+
+int main(){
+    return 0;
+}
