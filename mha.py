@@ -1,18 +1,6 @@
-# The use of PyTorch in Triton programs is not allowed for the purposes of fair benchmarking.
 import triton
 import triton.language as tl
 
-# @triton.autotune(
-#     configs=[
-#         # triton.Config({'BLOCK_SIZE_Q': 32, 'BLOCK_SIZE_KV': 32}, num_warps = 2),
-#         # triton.Config({'BLOCK_SIZE_Q': 32, 'BLOCK_SIZE_KV': 16}, num_warps = 2),
-#         # triton.Config({'BLOCK_SIZE_Q': 16, 'BLOCK_SIZE_KV': 32}, num_warps = 2),
-#         triton.Config({'BLOCK_SIZE_Q': 32, 'BLOCK_SIZE_KV': 32}, num_warps = 8),
-#         triton.Config({'BLOCK_SIZE_Q': 32, 'BLOCK_SIZE_KV': 16}, num_warps = 16),
-#         triton.Config({'BLOCK_SIZE_Q': 16, 'BLOCK_SIZE_KV': 32}, num_warps = 16),
-#     ],
-#     key = ['M', 'N', 'd']
-# )
 @triton.jit
 def sfm_attn_kernel(
     Q_ptr,
@@ -60,30 +48,107 @@ def sfm_attn_kernel(
     o /= l
     tl.store(output_ptr + range_q, o, mask = mask_q_N & mask_d)
 
+
+# Assuming the head_dim is power of 2
+@triton.jit
+def sfm_attn_kernel_head_fusion(
+    Q_ptr,
+    K_ptr,
+    V_ptr,
+    output_ptr,
+    N, num_heads,
+    scale_factor,
+    head_dim: tl.constexpr,
+    upper_h: tl.constexpr,
+    BLOCK_DIM: tl.constexpr,
+    BLOCK_SIZE_Q: tl.constexpr,
+    BLOCK_SIZE_KV: tl.constexpr,
+):
+    # recast pointers 
+    Q_ptr = Q_ptr.to(tl.pointer_type(tl.float32))
+    K_ptr = K_ptr.to(tl.pointer_type(tl.float32))
+    V_ptr = V_ptr.to(tl.pointer_type(tl.float32))
+    output_ptr = output_ptr.to(tl.pointer_type(tl.float32))
+
+    pid, d = tl.program_id(0), head_dim * num_heads
+    range_q_N = pid * BLOCK_SIZE_Q + tl.arange(0, BLOCK_SIZE_Q)
+    mask_q_N = range_q_N[:, None] < N
+    range_d = tl.arange(0, BLOCK_DIM)
+    mask_d = range_d[None, :] < d
+    range_q = range_q_N[:, None] * d + range_d[None, :]
+    q = tl.load(Q_ptr + range_q, mask = mask_q_N & mask_d, other = 0.0)
+    # reshape and transpose q to (upper_h, BLOCK_SIZE_Q, head_dim)
+    q = tl.trans(tl.reshape(q, (BLOCK_SIZE_Q, upper_h, head_dim)), (1, 0, 2))
+    o = tl.zeros_like(q)
+    l = tl.zeros((upper_h, BLOCK_SIZE_Q, 1), tl.float32)
+    m = tl.full((upper_h, BLOCK_SIZE_Q, 1), -float("inf"), tl.float32)
+    m_new = tl.zeros((upper_h, BLOCK_SIZE_Q, 1), tl.float32)
+    
+    for i in range(0, N, BLOCK_SIZE_KV):
+        range_kv_N = i + tl.arange(0, BLOCK_SIZE_KV)
+        range_kv = range_kv_N[:, None] * d + range_d[None, :]
+        mask_kv_N = range_kv_N[:, None] < N
+        k = tl.load(K_ptr + range_kv, mask = mask_kv_N & mask_d, other = 0.0)
+        # reshape and transpose k to (upper_h, head_dim, BLOCK_SIZE_KV)
+        k = tl.trans(tl.reshape(k, (BLOCK_SIZE_KV, upper_h, head_dim)), (1, 2, 0))
+        p = tl.dot(q, k, allow_tf32 = True) * scale_factor  # (upper_h, BLOCK_SIZE_Q, BLOCK_SIZE_KV)
+        p = tl.where(mask_kv_N.T[None, :, :], p, -float('inf'))   # apply a mask to avoid nonexistent keys/values
+        m_new = tl.maximum(tl.max(p, axis = -1, keep_dims = True), m)
+        s = tl.exp(p - m_new) # (upper_h, BLOCK_SIZE_Q, BLOCK_SIZE_KV)
+        l = l * tl.exp(m - m_new) + tl.sum(s, axis = -1, keep_dims = True)
+        v = tl.load(V_ptr + range_kv, mask = mask_kv_N & mask_d, other = 0.0)
+        # reshape and transpose v to (upper_h, BLOCK_SIZE_KV, head_dim)
+        v = tl.trans(tl.reshape(v, (BLOCK_SIZE_KV, upper_h, head_dim)), (1, 0, 2))
+        o = o * tl.exp(m - m_new) + tl.dot(s, v, allow_tf32 = False) # (upper_h, BLOCK_SIZE_Q, head_dim)
+        m = m_new
+    o /= l
+    # reshape and transpose o to (BLOCK_SIZE_Q, BLOCK_DIM)
+    o = tl.reshape(tl.trans(o, (1, 0, 2)), (BLOCK_SIZE_Q, BLOCK_DIM))
+    tl.store(output_ptr + range_q, o, mask = mask_q_N & mask_d)
+    
+
+
 # Q_ptr, K_ptr, V_ptr, output_ptr are raw device pointers
 # only support A100, H100, Tesla T4
 def solve(Q_ptr: int, K_ptr: int, V_ptr: int, output_ptr: int, N: int, d_model: int, h: int, gpu = "T4"):
     head_dim = d_model // h
-    BQ = 16 if gpu == "A100" else (16 if gpu == "H100" else 16)
-    BKV = 64 if gpu == "A100" else (64 if gpu == "H100" else 64)
+    block_dim = triton.next_power_of_2(head_dim)
     scale_factor = head_dim ** -0.5
 
-    grid = lambda meta: (triton.cdiv(N, meta['BLOCK_SIZE_Q']), h) 
-    sfm_attn_kernel[grid](
-        Q_ptr, K_ptr, V_ptr, 
-        output_ptr, 
-        N, head_dim, h, 
-        scale_factor, 
-        BLOCK_DIM = max(triton.next_power_of_2(head_dim), 16), 
-        BLOCK_SIZE_Q = BQ, 
-        BLOCK_SIZE_KV = BKV,
-    )
+    if block_dim > head_dim or head_dim < 16:
+        BQ = 16 if gpu == "A100" else (16 if gpu == "H100" else 16)
+        BKV = 64 if gpu == "A100" else (64 if gpu == "H100" else 64)
+        grid = lambda meta: (triton.cdiv(N, meta['BLOCK_SIZE_Q']), h, ) 
+        sfm_attn_kernel[grid](
+            Q_ptr, K_ptr, V_ptr, 
+            output_ptr, 
+            N, head_dim, h, 
+            scale_factor, 
+            BLOCK_DIM = max(block_dim, 16), 
+            BLOCK_SIZE_Q = BQ, 
+            BLOCK_SIZE_KV = BKV,
+        )
+    else:
+        BQ = 16 if gpu == "A100" else (16 if gpu == "H100" else 16)
+        BKV = 64 if gpu == "A100" else (64 if gpu == "H100" else 16)
+        grid = lambda meta: (triton.cdiv(N, meta['BLOCK_SIZE_Q']), ) 
+        sfm_attn_kernel_head_fusion[grid](
+            Q_ptr, K_ptr, V_ptr, 
+            output_ptr, 
+            N, h, 
+            scale_factor, 
+            head_dim = head_dim,
+            upper_h = triton.next_power_of_2(h),
+            BLOCK_DIM = block_dim * triton.next_power_of_2(h), 
+            BLOCK_SIZE_Q = BQ, 
+            BLOCK_SIZE_KV = BKV,
+        )
 
 if __name__ == "__main__":
     import torch
     from torch import nn
     import time
-    N, d_model, h = 1 << 12, 512, 8
+    N, d_model, h = 1 << 12, 128, 8
     Q = torch.randn(N, d_model, device = "cuda")
     K = torch.randn(N, d_model, device = "cuda")
     V = torch.randn(N, d_model, device = "cuda")
@@ -106,5 +171,5 @@ if __name__ == "__main__":
     print(torch.allclose(output, output_pytorch, atol = 1e-4))
     print(f'The maximum difference between torch and triton is '
           f'{torch.max(torch.abs(output - output_pytorch))}')
-    print(f'The output is {output}')
-    print(f'The output_pytorch is {output_pytorch}')
+    # print(f'The output is {output}')
+    # print(f'The output_pytorch is {output_pytorch}')
