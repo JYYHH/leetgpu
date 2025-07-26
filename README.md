@@ -1,4 +1,5 @@
 ## [LeetGPU GEMM](https://leetgpu.com/challenges/gemm-fp16)
+- see [gemm.cu](gemm.cu) for the code
 
 ### 1. Comparing the fast and slow trivial kernels (without shared memory)
 1. `Slower one`: (35.97ms under `Tesla T4`)
@@ -124,3 +125,7 @@ __global__ void MatrixMultiplyKernel_simple(
 
 ### 3. Use Local Tiling to futher accelerate GEMM (commit: ffa8c7db985874f4a5b025b0bf4283ba4865f437)
 - We let each thread to compute `LOCAL_TILE_LENGTH x LOCAL_TILE_LENGTH` elements of $C[]$ instead of `1 x 1`, and the key is the `LOCAL_TILE_LENGTH x LOCAL_TILE_LENGTH` elements of $C[]$ could be expressed as the sum (reduction dimension `k`) of the `outer` of a col vector of $A[]$ and a row vector of $B[]$. The latter could further saved in local memory from the shared memeory, and each element of them will be reused `LOCAL_TILE_LENGTH` times (which is the property of the outer).
+
+## [LeetGPU Batched Matrix Multiplication](https://leetgpu.com/challenges/batched-matrix-multiplication)
+- only need to support batched matmul, one more dimension in grid...
+- see [bmm.cu](bmm.cu) for the code
