@@ -2,6 +2,11 @@ import triton
 import triton.language as tl
 
 @triton.jit
+def init_kernel(loss_ptr):
+    loss_ptr = loss_ptr.to(tl.pointer_type(tl.float32))
+    tl.store(loss_ptr, 0.0)
+
+@triton.jit
 def ccel_kernel(
     logits_ptr,
     true_labels_ptr,
@@ -37,6 +42,7 @@ def ccel_kernel(
 def solve(logits_ptr: int, true_labels_ptr: int, loss_ptr: int, N: int, C: int):
     BLOCK_SIZE_N = 16
     BLOCK_SIZE_C = triton.next_power_of_2(C)
+    init_kernel[(1, )](loss_ptr)
     ccel_kernel[(triton.cdiv(N, BLOCK_SIZE_N), )](
         logits_ptr, 
         true_labels_ptr, 
